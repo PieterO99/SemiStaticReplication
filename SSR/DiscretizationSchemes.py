@@ -15,12 +15,12 @@ def StockpriceGBM(t,S0,mu,sigma):
 
 
 def discretizationScheme(times, S0, mu, sigma):
-  stockPrices = [S0]
+  path = [S0]
 
   for i in range(1,len(times)):
     delta = times[i] - times[i-1]
-    Scurrent = stockPrices[-1]
+    Scurrent = path[-1]
     Snew = StockpriceGBM(delta,Scurrent,mu,sigma)
-    stockPrices.append(Snew)
+    path.append(Snew)
 
-  return stockPrices
+  return path
