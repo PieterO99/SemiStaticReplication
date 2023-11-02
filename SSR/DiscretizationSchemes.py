@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 
 mu = 0.001
 sigma = 0.01
-start_price = 5
+S0 = 100
 
 def StockpriceGBM(t,S0,mu,sigma):
   """
