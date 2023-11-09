@@ -3,57 +3,54 @@ from math import log, sqrt, exp
 from scipy.stats import norm
 
 
-def stockprice_gbm(t, s, mu, sigma, d=1):
-    wiener_difference = np.random.normal(0, t, d)
-    return s * np.exp((mu - 0.5 * sigma ** 2) * t + sigma * wiener_difference)
+def payoff(S0, K, style):
 
-
-def discretization_scheme(times, s, mu, sigma, d=1):
-    stock_prices = np.array([s])
-    deltas = [0]
-
-    for time in times:
-        deltas.append(time - deltas[-1])
-        current = stock_prices[-1]
-        new = stockprice_gbm(deltas[-1], current, mu, sigma, d)
-        stock_prices = np.concatenate((stock_prices, new))
-
-    return stock_prices
-
-
-def gen_paths(monitoring_dates, s, mu, sigma, sample_size):
-    p = []
-    for n in range(sample_size):
-        path = discretization_scheme(monitoring_dates, s, mu, sigma)
-        p.append(path)
-    paths = np.array(p)
-    return paths
-
-
-def payoff(s, k, style):
     if style == 'call':
-        return max(s - k, 0)
+        return max(S0 - K, 0)
     elif style == 'put':
-        return max(k - s, 0)
+        return max(K - S0, 0)
     else:
         raise ValueError("Invalid option style. Style must be 'call' or 'put'.")
 
 
-def forward(s, r, t):
-    return s * np.exp(r * t)
+def forward(S0, r, T):
+    return S0 * np.exp(r * T)
 
 
-def d1(s, k, t, r, sigma):
-    return (log(s / k) + (r + sigma ** 2 / 2.) * t) / (sigma * sqrt(t))
+def d1(S0, K, T, r, sigma):
+    return (log(S0 / K) + (r + sigma ** 2 / 2.) * T) / (sigma * sqrt(T))
 
 
-def d2(s, k, t, r, sigma):
-    return d1(s, k, t, r, sigma) - sigma * sqrt(t)
+def d2(S0, K, T, r, sigma):
+    return d1(S0, K, T, r, sigma) - sigma * sqrt(T)
 
 
-def bs_call(s, k, t, r, sigma):
-    return s * norm.cdf(d1(s, k, t, r, sigma)) - k * exp(-r * t) * norm.cdf(d2(s, k, t, r, sigma))
+def bs_call(S0, K, T, r, sigma):
+    return S0 * norm.cdf(d1(S0, K, T, r, sigma)) - K * exp(-r * T) * norm.cdf(d2(S0, K, T, r, sigma))
 
 
-def bs_put(s, k, t, r, sigma):
-    return norm.cdf(-d2(s, k, t, r, sigma)) * k * np.exp(-r * t) - norm.cdf(-d1(s, k, t, r, sigma)) * s
+def bs_put(S0, K, T, r, sigma):
+    return norm.cdf(-d2(S0, K, T, r, sigma)) * K * np.exp(-r * T) - norm.cdf(-d1(S0, K, T, r, sigma)) * S0
+
+def gen_paths(monitoring_dates, S0, mu, sigma, N):
+    """
+    N: sample size
+    """
+
+    delta_t = np.diff(monitoring_dates)
+    num_intervals = len(delta_t)
+    rng = np.random.default_rng()
+    normal_samples = rng.normal(0, 1, (N, num_intervals))
+    exp_term = (mu - 0.5 * sigma ** 2) * delta_t
+    vol_term = sigma * np.sqrt(delta_t)
+
+    cum_sum_exp = np.cumsum(exp_term)
+    cum_sum_vol = [np.cumsum(vol_term * normal_samples[i]) for i in range(N)]
+
+    stock_prices = np.zeros((N, num_intervals + 1))
+    stock_prices[:, 0] = S0
+
+    for i in range(N):
+        stock_prices[i, 1:] = S0 * np.exp(cum_sum_exp + cum_sum_vol[i])
+
+    return stock_prices

@@ -1,19 +1,20 @@
 from tensorflow import keras
 from keras import layers
 from keras.callbacks import EarlyStopping
+import numpy as np
 
 
 # Define the network class
 class SemiStaticNet(keras.models.Sequential):
-    def __init__(self, weights):
+    def __init__(self, weights, optimizer):
         super().__init__()
 
-        # Define the layers
+        # Define the layers 
         self.add(layers.Dense(units=32, activation='relu', input_shape=(1,)))
         self.add(layers.Dense(units=1, activation='linear'))
 
         # Compile the semi_static_rep with the Adam optimizer and mean squared error (MSE) as the loss and metric
-        self.compile(optimizer=keras.optimizers.Adam(learning_rate=0.001), loss='mean_squared_error',
+        self.compile(optimizer=optimizer, loss='mean_squared_error',
                      metrics=['mean_squared_error'])
 
         # Initialize the parameters with default weights
@@ -35,15 +36,18 @@ class SemiStaticNet(keras.models.Sequential):
 
 
 # Build the backward recursion that fits the network for every interval between monitoring dates
-def fitting(stock, option, weights=None):
-    rlnn = SemiStaticNet(weights)
+def fitting(stock, option, weights=None, optimizer=keras.optimizers.Adam(learning_rate=0.001)):
+    rlnn = SemiStaticNet(weights, optimizer)
+
+    # normalize features:
+    normalized_stock = stock / np.max(stock)
 
     # Define the EarlyStopping callback
     early_stopping = EarlyStopping(monitor='val_loss', patience=6, verbose=1, restore_best_weights=True)
 
     # Split the data into a training set and a validation set
     train_size = int(0.7 * len(stock))
-    x_train, x_val = stock[:train_size], stock[train_size:]
+    x_train, x_val = normalized_stock[:train_size], normalized_stock[train_size:]
     y_train, y_val = option[:train_size], option[train_size:]
 
     rlnn.fit(x_train, y_train, epochs=3000, batch_size=int(len(stock) / 10), verbose=0,
