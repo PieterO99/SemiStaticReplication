@@ -4,11 +4,10 @@ from scipy.stats import norm
 
 
 def payoff(S0, K, style):
-
     if style == 'call':
-        return max(S0 - K, 0)
+        return np.maximum(S0 - K, np.zeros_like(S0))
     elif style == 'put':
-        return max(K - S0, 0)
+        return np.maximum(K - S0, np.zeros_like(S0))
     else:
         raise ValueError("Invalid option style. Style must be 'call' or 'put'.")
 
@@ -31,6 +30,7 @@ def bs_call(S0, K, T, r, sigma):
 
 def bs_put(S0, K, T, r, sigma):
     return norm.cdf(-d2(S0, K, T, r, sigma)) * K * np.exp(-r * T) - norm.cdf(-d1(S0, K, T, r, sigma)) * S0
+
 
 def gen_paths(monitoring_dates, S0, mu, sigma, N):
     """
