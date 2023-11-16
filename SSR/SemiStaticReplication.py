@@ -1,12 +1,14 @@
-import matplotlib.pyplot as plt
-import numpy as np
-from project_helpers import payoff
-from project_helpers import gen_paths, forward, bs_put, bs_call
-from project_network import SemiStaticNet
-import tensorflow as tf
-from keras.callbacks import EarlyStopping
 import csv
 from datetime import datetime
+
+import matplotlib.pyplot as plt
+import numpy as np
+import tensorflow as tf
+from keras.callbacks import EarlyStopping
+import keras.backend as KB
+
+from project_helpers import payoff, gen_paths, forward, bs_put, bs_call
+from project_network import SemiStaticNet
 
 
 # Defines a lower triangular matrix describing the stock dynamics
@@ -113,6 +115,43 @@ def continuation_q(w_1, b_1, w_2, b_2, stock, delta_t, norm):  # norm is normali
     return cont
 
 
+def pre_training(nnet, early_stopping, sample_paths, option, time_increments, batch, n_epochs, val_ratio, strike,
+                 style):
+    M = len(option[0]) - 1
+    nnet.fit(sample_paths[:, M], option[:, M], epochs=n_epochs, batch_size=batch, verbose=0,
+             validation_split=val_ratio, callbacks=[early_stopping])
+
+    # Compute option value at T-1
+    weights_layer_1 = np.array(nnet.layers[0].get_weights()[0]).reshape(-1)
+    biases_layer_1 = np.array(nnet.layers[0].get_weights()[1])
+    weights_layer_2 = np.array(nnet.layers[1].get_weights()[0]).reshape(-1)
+    biases_layer_2 = np.array(nnet.layers[1].get_weights()[1])
+
+    q = continuation_q(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2, sample_paths[:, M - 1],
+                       time_increments[M - 1], np.max(sample_paths[:, M]))  # continuation value
+    h = payoff(sample_paths[:, M - 1], strike, style)  # value of exercising now
+
+    option[:, M - 1] = np.maximum(h, q)  # take maximum of both values
+
+    # compute option values by backward regression
+    for m in range(M - 1, 0, -1):
+        nnet.fit(sample_paths[:, m], option[:, m], epochs=n_epochs, batch_size=batch, verbose=0,
+                 validation_split=val_ratio, callbacks=[early_stopping])
+
+        # compute estimated option value one time step earlier
+        weights_layer_1 = np.array(nnet.layers[0].get_weights()[0]).reshape(-1)
+        biases_layer_1 = np.array(nnet.layers[0].get_weights()[1])
+        weights_layer_2 = np.array(nnet.layers[1].get_weights()[0]).reshape(-1)
+        biases_layer_2 = np.array(nnet.layers[1].get_weights()[1])
+
+        q = continuation_q(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2, sample_paths[:, m - 1],
+                           time_increments[m - 1], np.max(sample_paths[:, m]))  # continuation value
+        h = payoff(sample_paths[:, m - 1], strike, style)  # value of exercising now
+        option[:, m - 1] = np.maximum(h, q)  # take maximum of both values
+
+    return nnet
+
+
 def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer):
     """
     monitoring_dates: t0=0, ..., tM=T
@@ -129,7 +168,7 @@ def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer):
         'l1': 0.01,
         'l2': 0.0005,
         'l3': optimizer.get_config()['learning_rate'],
-        'e1': 2000,
+        'e1': 1500,
         'e2': 2000
     }
 
@@ -140,19 +179,41 @@ def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer):
 
     betas = []  # store model weights
     time_increments = np.diff(monitoring_dates)
+    M = len(monitoring_dates) - 1
 
-    # generate sample paths of asset S
+    rlnn = SemiStaticNet(optimizer)
+    early_stopping = EarlyStopping(monitor='val_loss', mode='min', patience=5, verbose=0)
+
+    # first pre-run
     sample_pathsS = gen_paths(monitoring_dates, S0, mu, sigma, N)
+    option = np.zeros(sample_pathsS.shape)
+    option[:, M] = payoff(sample_pathsS[:, M], K, style)
+    batch = int(N / 20)
+    n_epochs = e1
+    val_ratio = 0.2
+    KB.set_value(rlnn.optimizer.lr, l1)
+    rlnn = pre_training(rlnn, early_stopping, sample_pathsS, option, time_increments, batch,
+                        n_epochs, val_ratio, K, style)
 
+    # second pre-run
+    sample_pathsS = gen_paths(monitoring_dates, S0, mu, sigma, N)
+    option = np.zeros(sample_pathsS.shape)
+    option[:, M] = payoff(sample_pathsS[:, M], K, style)
+    batch = int(N / 10)
+    n_epochs = e2
+    val_ratio = 0.2
+    KB.set_value(rlnn.optimizer.lr, l2)
+    rlnn = pre_training(rlnn, early_stopping, sample_pathsS, option, time_increments, batch,
+                        n_epochs, val_ratio, K, style)
+
+    # run the model
+    sample_pathsS = gen_paths(monitoring_dates, S0, mu, sigma, N)
     # evaluate maturity time option values
     M = len(monitoring_dates) - 1
     option = np.zeros(sample_pathsS.shape)
     option[:, M] = payoff(sample_pathsS[:, M], K, style)
 
-    rlnn = SemiStaticNet(optimizer)
-
-    early_stopping = EarlyStopping(monitor='val_loss', mode='min', patience=5, verbose=1)
-
+    KB.set_value(rlnn.optimizer.lr, 0.001)
     rlnn.fit(sample_pathsS[:, M], option[:, M], epochs=3000, batch_size=int(N / 10), verbose=0,
              validation_split=0.3, callbacks=[early_stopping])
 
@@ -197,7 +258,7 @@ def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer):
         # append the model weights to the beta list
         betas.append(fitted_beta)
 
-    details['initial_option_value'] = option[0, 0]
+    details['initial_option_value'] = option[0, 0] * S0
     # Save details to a CSV file
     save_details_to_csv('run_details.csv', details)
 
@@ -229,7 +290,7 @@ def visualize_fit(predictions, option_values, stock_values, time):
 S = 40  # Initial price
 mu = 0.06  # Drift
 sigma = 0.2  # Volatility
-K = 40  # Strike price
+K_strike = 40  # Strike price
 r = 0.06  # Risk-free rate
 T = 1  # Maturity
 M = 10  # Number of monitoring dates
@@ -237,7 +298,7 @@ N = 20000  # Number of sample paths
 pf_style = 'put'  # Payoff type
 monitoring_dates = np.linspace(0, T, M + 1)
 # %%
-weights, option_value = model(S / S, K / S, mu, sigma, N, monitoring_dates, pf_style,
+weights, option_value = model(S / S, K_strike / S, mu, sigma, N, monitoring_dates, pf_style,
                               optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=0.001))
 v_0 = option_value[:, 0][0]
 print(S * v_0)
