@@ -1,5 +1,4 @@
 import numpy as np
-from math import log, sqrt, exp
 from scipy.stats import norm
 
 
@@ -17,19 +16,35 @@ def forward(S0, r, T):
 
 
 def d1(S0, K, T, r, sigma):
-    return (log(S0 / K) + (r + sigma ** 2 / 2.) * T) / (sigma * sqrt(T))
+    denominator = sigma * np.sqrt(T)
+    denominator = np.where(denominator == 0, 1e-10, denominator)
+    return (np.log(S0 / K) + (r + sigma ** 2 / 2.) * T) / denominator
 
 
 def d2(S0, K, T, r, sigma):
-    return d1(S0, K, T, r, sigma) - sigma * sqrt(T)
+    return d1(S0, K, T, r, sigma) - sigma * np.sqrt(T)
 
 
 def bs_call(S0, K, T, r, sigma):
-    return S0 * norm.cdf(d1(S0, K, T, r, sigma)) - K * exp(-r * T) * norm.cdf(d2(S0, K, T, r, sigma))
+    S0 = np.array(S0)
+    K = np.array(K)
+    d1_values = d1(S0[:, None], K[None, :], T, r, sigma)
+    d2_values = d1_values - sigma * np.sqrt(T)
+
+    call_values = S0[:, None] * norm.cdf(d1_values) - K[None, :] * np.exp(-r * T) * norm.cdf(d2_values)
+
+    return call_values
 
 
 def bs_put(S0, K, T, r, sigma):
-    return norm.cdf(-d2(S0, K, T, r, sigma)) * K * np.exp(-r * T) - norm.cdf(-d1(S0, K, T, r, sigma)) * S0
+    S0 = np.array(S0)
+    K = np.array(K)
+    d1_values = d1(S0[:, None], K[None, :], T, r, sigma)
+    d2_values = d1_values - sigma * np.sqrt(T)
+
+    put_values = norm.cdf(-d2_values) * K[None, :] * np.exp(-r * T) - norm.cdf(-d1_values) * S0[:, None]
+
+    return put_values
 
 
 def gen_paths(monitoring_dates, S0, mu, sigma, N):

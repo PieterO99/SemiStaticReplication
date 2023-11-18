@@ -1,5 +1,6 @@
 import csv
 from datetime import datetime
+import time
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,6 +11,7 @@ import keras.backend as KB
 from project_helpers import payoff, gen_paths, forward, bs_put, bs_call
 from project_network import SemiStaticNet
 
+start_time = time.time()
 
 # Defines a lower triangular matrix describing the stock dynamics
 def binomial_tree_stock(S, T, sigma, n):
@@ -80,40 +82,58 @@ def save_details_to_csv(filename, details):
 
 
 # Compute the continuation value Q for the N paths at time t_{m-1}
-def continuation_q(w_1, b_1, w_2, b_2, stock, delta_t, norm):  # norm is normalizing constant from fitting t+1
+def continuation_q(w_1, b_1, w_2, b_2, stock, delta_t):
 
-    p = len(w_2)  # number of hidden nodes in the first hidden layer
-    cont = np.zeros(len(stock))  # continuation vector
+    cont = np.full_like(stock, b_2[0])
+    mask1_indices = np.where((w_1 >= 0) & (b_1 >= 0))[0]
+    mask2_indices = np.where((w_1 > 0) & (b_1 < 0))[0]
+    mask3_indices = np.where((w_1 < 0) & (b_1 > 0))[0]
 
-    normalized_stock = stock  # / norm
+    strikes_call = -b_1[mask2_indices] / w_1[mask2_indices]
+    strikes_put = -b_1[mask3_indices] / w_1[mask3_indices]
 
-    for j in range(len(stock)):
+    cont += np.sum(w_2[mask1_indices] * (w_1[mask1_indices] *
+                                         np.tile(forward(stock, r, delta_t)[:, None], len(mask1_indices)) + b_1[mask1_indices]), axis=1)
+    cont += np.sum(w_2[mask2_indices] * w_1[mask2_indices] * bs_call(stock, strikes_call, delta_t, r, sigma), axis=1)
+    cont -= np.sum(w_2[mask3_indices] * w_1[mask3_indices] * bs_put(stock, strikes_put, delta_t, r, sigma), axis=1)
 
-        s_tm = normalized_stock[j]
-        sum_cond_exp = b_2[0]
-        cond_exp = 0
-
-        for i in range(p):
-            w_i = w_1[i]
-            b_i = b_1[i]
-            omega_i = w_2[i]
-
-            if w_i >= 0 and b_i >= 0:
-                cond_exp = w_i * forward(s_tm, r, delta_t) + b_i
-            elif w_i > 0 > b_i:
-                cond_exp = w_i * bs_call(s_tm, -b_i / w_i, delta_t, r, sigma)
-            elif w_i < 0 < b_i:
-                cond_exp = - w_i * bs_put(s_tm, -b_i / w_i, delta_t, r, sigma)
-            elif w_i <= 0 and b_i <= 0:
-                cond_exp = 0
-
-            sum_cond_exp += omega_i * cond_exp
-
-        # Discount by the risk-free rate
-        cont[j] = sum_cond_exp * np.exp(- r * delta_t)
+    cont *= np.exp(- r * delta_t)
 
     return cont
 
+
+#def continuation_q(w_1, b_1, w_2, b_2, stock, delta_t):
+
+#    p = len(w_2)  # number of hidden nodes in the first hidden layer
+#    cont = np.zeros(len(stock))  # continuation vector
+
+#    normalized_stock = stock
+
+#    for j in range(len(stock)):
+
+#        sum_cond_exp = b_2[0]
+#        cond_exp = 0
+
+#        for i in range(p):
+#            w_i = w_1[i]
+#            b_i = b_1[i]
+#            omega_i = w_2[i]
+
+#            if w_i >= 0 and b_i >= 0:
+#                cond_exp = w_i * forward(s_tm, r, delta_t) + b_i
+#            elif w_i > 0 > b_i:
+#                cond_exp = w_i * bs_call(s_tm, -b_i / w_i, delta_t, r, sigma)
+#            elif w_i < 0 < b_i:
+#                cond_exp = - w_i * bs_put(s_tm, -b_i / w_i, delta_t, r, sigma)
+#            elif w_i <= 0 and b_i <= 0:
+#                cond_exp = 0
+
+#            sum_cond_exp += omega_i * cond_exp
+
+        # Discount by the risk-free rate
+#        cont[j] = sum_cond_exp * np.exp(- r * delta_t)
+
+#    return cont
 
 def pre_training(nnet, early_stopping, sample_paths, option, time_increments, batch, n_epochs, val_ratio, strike,
                  style):
@@ -128,7 +148,7 @@ def pre_training(nnet, early_stopping, sample_paths, option, time_increments, ba
     biases_layer_2 = np.array(nnet.layers[1].get_weights()[1])
 
     q = continuation_q(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2, sample_paths[:, M - 1],
-                       time_increments[M - 1], np.max(sample_paths[:, M]))  # continuation value
+                       time_increments[M - 1])  # continuation value
     h = payoff(sample_paths[:, M - 1], strike, style)  # value of exercising now
 
     option[:, M - 1] = np.maximum(h, q)  # take maximum of both values
@@ -145,7 +165,7 @@ def pre_training(nnet, early_stopping, sample_paths, option, time_increments, ba
         biases_layer_2 = np.array(nnet.layers[1].get_weights()[1])
 
         q = continuation_q(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2, sample_paths[:, m - 1],
-                           time_increments[m - 1], np.max(sample_paths[:, m]))  # continuation value
+                           time_increments[m - 1])  # continuation value
         h = payoff(sample_paths[:, m - 1], strike, style)  # value of exercising now
         option[:, m - 1] = np.maximum(h, q)  # take maximum of both values
 
@@ -166,10 +186,10 @@ def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer):
         'monitoring_dates': monitoring_dates,
         'style': style,
         'l1': 0.01,
-        'l2': 0.0005,
+        'l2': 0.005,
         'l3': optimizer.get_config()['learning_rate'],
-        'e1': 1500,
-        'e2': 2000
+        'e1': 1000,
+        'e2': 1000
     }
 
     l1 = details['l1']
@@ -179,7 +199,7 @@ def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer):
 
     betas = []  # store model weights
     time_increments = np.diff(monitoring_dates)
-    M = len(monitoring_dates) - 1
+    M = len(time_increments)
 
     rlnn = SemiStaticNet(optimizer)
     early_stopping = EarlyStopping(monitor='val_loss', mode='min', patience=5, verbose=0)
@@ -188,7 +208,7 @@ def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer):
     sample_pathsS = gen_paths(monitoring_dates, S0, mu, sigma, N)
     option = np.zeros(sample_pathsS.shape)
     option[:, M] = payoff(sample_pathsS[:, M], K, style)
-    batch = int(N / 20)
+    batch = int(N / 10)
     n_epochs = e1
     val_ratio = 0.2
     KB.set_value(rlnn.optimizer.lr, l1)
@@ -201,7 +221,7 @@ def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer):
     option[:, M] = payoff(sample_pathsS[:, M], K, style)
     batch = int(N / 10)
     n_epochs = e2
-    val_ratio = 0.2
+    val_ratio = 0.4
     KB.set_value(rlnn.optimizer.lr, l2)
     rlnn = pre_training(rlnn, early_stopping, sample_pathsS, option, time_increments, batch,
                         n_epochs, val_ratio, K, style)
@@ -209,7 +229,6 @@ def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer):
     # run the model
     sample_pathsS = gen_paths(monitoring_dates, S0, mu, sigma, N)
     # evaluate maturity time option values
-    M = len(monitoring_dates) - 1
     option = np.zeros(sample_pathsS.shape)
     option[:, M] = payoff(sample_pathsS[:, M], K, style)
 
@@ -225,7 +244,7 @@ def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer):
     betas.append([weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2])
 
     q = continuation_q(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2, sample_pathsS[:, M - 1],
-                       time_increments[M - 1], np.max(sample_pathsS[:, M]))  # continuation value
+                       time_increments[M - 1])  # continuation value
     h = payoff(sample_pathsS[:, M - 1], K, style)  # value of exercising now
 
     option[:, M - 1] = np.maximum(h, q)  # take maximum of both values
@@ -235,10 +254,8 @@ def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer):
 
     # compute option values by backward regression
     for m in range(M - 1, 0, -1):
-
         rlnn.fit(sample_pathsS[:, m], option[:, m], epochs=3000, batch_size=int(N / 10), verbose=0,
                  validation_split=0.3, callbacks=[early_stopping])
-        fitted_beta = rlnn.get_weights()
 
         # compute estimated option value one time step earlier
         weights_layer_1 = np.array(rlnn.layers[0].get_weights()[0]).reshape(-1)
@@ -248,17 +265,14 @@ def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer):
         betas.append([weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2])
 
         q = continuation_q(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2, sample_pathsS[:, m - 1],
-                           time_increments[m - 1], np.max(sample_pathsS[:, m]))  # continuation value
+                           time_increments[m - 1])  # continuation value
         h = payoff(sample_pathsS[:, m - 1], K, style)  # value of exercising now
         option[:, m - 1] = np.maximum(h, q)  # take maximum of both values
 
         predictions = np.array(rlnn.predict(sample_pathsS[:, m])).reshape(-1)
         visualize_fit(predictions, option[:, m], sample_pathsS[:, m], m)
 
-        # append the model weights to the beta list
-        betas.append(fitted_beta)
-
-    details['initial_option_value'] = option[0, 0] * S0
+    details['initial_option_value'] = (option[0, 0] * S0)
     # Save details to a CSV file
     save_details_to_csv('run_details.csv', details)
 
@@ -275,8 +289,9 @@ def visualize_fit(predictions, option_values, stock_values, time):
     plt.scatter(stock_values * S, predictions * S,
                 label=f'Regressed option value at {time}-th monitoring date', color='r', s=0.4)
 
-    plt.scatter(monitored_stock[time], monitored_prices[time],
-                label=f'Option value at {time}-th monitoring date via Binomial Model', color='m', s=0.4)
+    mask = np.where(monitored_stock[time] > 0)[0]
+    plt.scatter(monitored_stock[time][mask], monitored_prices[time][mask],
+                label=f'Option value at {time}-th monitoring date via Binomial Model', color='g', s=0.4)
 
     plt.xlabel('Stock Value')
     plt.ylabel('Option Value')
@@ -294,7 +309,7 @@ K_strike = 40  # Strike price
 r = 0.06  # Risk-free rate
 T = 1  # Maturity
 M = 10  # Number of monitoring dates
-N = 20000  # Number of sample paths
+N = 50000  # Number of sample paths
 pf_style = 'put'  # Payoff type
 monitoring_dates = np.linspace(0, T, M + 1)
 # %%
@@ -302,3 +317,7 @@ weights, option_value = model(S / S, K_strike / S, mu, sigma, N, monitoring_date
                               optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=0.001))
 v_0 = option_value[:, 0][0]
 print(S * v_0)
+
+end_time = time.time()
+elapsed_time = end_time - start_time
+print(f"Elapsed Time: {elapsed_time} seconds")

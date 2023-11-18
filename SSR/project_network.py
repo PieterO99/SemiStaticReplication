@@ -1,5 +1,5 @@
-from tensorflow import keras
 from keras import layers
+from tensorflow import keras
 
 
 # Define the network class
@@ -15,3 +15,4 @@ class SemiStaticNet(keras.models.Sequential):
 
         # Compile the semi_static_rep with the Adam optimizer and mean squared error (MSE) as the loss and metric
         self.compile(optimizer=optimizer, loss='mean_squared_error')
+
