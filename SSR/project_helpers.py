@@ -26,23 +26,27 @@ def d2(S0, K, T, r, sigma):
 
 
 def bs_call(S0, K, T, r, sigma):
-    S0 = np.array(S0)
-    K = np.array(K)
-    d1_values = d1(S0[:, None], K[None, :], T, r, sigma)
-    d2_values = d1_values - sigma * np.sqrt(T)
 
-    call_values = S0[:, None] * norm.cdf(d1_values) - K[None, :] * np.exp(-r * T) * norm.cdf(d2_values)
+    S0 = S0[:, np.newaxis]
+    K = K[np.newaxis, :]
+
+    d1_values = d1(S0, K, T, r, sigma)
+    d2_values = d2(S0, K, T, r, sigma)
+
+    call_values = S0 * norm.cdf(d1_values) - K * np.exp(-r * T) * norm.cdf(d2_values)
 
     return call_values
 
 
 def bs_put(S0, K, T, r, sigma):
-    S0 = np.array(S0)
-    K = np.array(K)
-    d1_values = d1(S0[:, None], K[None, :], T, r, sigma)
-    d2_values = d1_values - sigma * np.sqrt(T)
 
-    put_values = norm.cdf(-d2_values) * K[None, :] * np.exp(-r * T) - norm.cdf(-d1_values) * S0[:, None]
+    S0 = S0[:, np.newaxis]
+    K = K[np.newaxis, :]
+
+    d1_values = d1(S0, K, T, r, sigma)
+    d2_values = d2(S0, K, T, r, sigma)
+
+    put_values = norm.cdf(-d2_values) * K * np.exp(-r * T) - norm.cdf(-d1_values) * S0
 
     return put_values
 

@@ -1,6 +1,6 @@
 import csv
 from datetime import datetime
-from tqdm import tqdm
+# from tqdm import tqdm
 
 import numpy as np
 import tensorflow as tf
@@ -71,12 +71,12 @@ T = 1.0  # Time to maturity
 r = 0.06  # Risk-free interest rate
 sigma = 0.2  # Volatility
 n = 10  # Number of time steps in the binomial tree
-early_exercise_dates = np.linspace(0, 1, 4)  # List of early exercise dates
+early_exercise_dates = np.linspace(0, 1, 11)  # List of early exercise dates
 bermudan_option_prices = binomial_pricer(S, K, T, r, sigma, n, early_exercise_dates, 'put')
 print('Option price via binomial method:', bermudan_option_prices[0, 0])
 
-monitored_prices = [bermudan_option_prices[int(k * n)][:] for k in range(4)]
-monitored_stock = [binomial_tree_stock(S, T, sigma, n*4)[int(k * n)][:] for k in range(4)]
+monitored_prices = [bermudan_option_prices[int(k * n)][:] for k in range(11)]
+monitored_stock = [binomial_tree_stock(S, T, sigma, n*10)[int(k * n)][:] for k in range(11)]
 
 
 # %%
@@ -163,7 +163,8 @@ def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer, hidd_nds, l1,
     n_epochs = e1
     val_ratio = 0.2
     KB.set_value(rlnn.optimizer.lr, l1)
-    rlnn = pre_training(rlnn, early_stopping, sample_pathsS[:, 1], option_pff, batch,
+    normalizer = np.mean(sample_pathsS[:, 1])
+    rlnn = pre_training(rlnn, early_stopping, sample_pathsS[:, 1] / normalizer, option_pff / normalizer, batch,
                         n_epochs, val_ratio)
     print('END OF FIRST PRE-RUN')
 
@@ -174,7 +175,8 @@ def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer, hidd_nds, l1,
     n_epochs = e2
     val_ratio = 0.2
     KB.set_value(rlnn.optimizer.lr, l2)
-    rlnn = pre_training(rlnn, early_stopping, sample_pathsS[:, 1], option_pff, batch,
+    normalizer = np.mean(sample_pathsS[:, 1])
+    rlnn = pre_training(rlnn, early_stopping, sample_pathsS[:, 1] / normalizer, option_pff / normalizer, batch,
                         n_epochs, val_ratio)
     print('END OF SECOND PRE-RUN')
 
@@ -184,8 +186,9 @@ def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer, hidd_nds, l1,
     option = np.zeros(sample_pathsS.shape)
     option[:, M] = payoff(sample_pathsS[:, M], K, style)
 
+    normalizer = np.mean(sample_pathsS[:, M])
     KB.set_value(rlnn.optimizer.lr, l3)
-    rlnn.fit(sample_pathsS[:, M], option[:, M], epochs=3000, batch_size=int(N / 10), verbose=0,
+    rlnn.fit(sample_pathsS[:, M] / normalizer, option[:, M] / normalizer, epochs=3000, batch_size=int(N / 10), verbose=0,
              validation_split=0.2, callbacks=[early_stopping])
 
     # Compute option value at T-1
@@ -195,11 +198,11 @@ def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer, hidd_nds, l1,
     biases_layer_2 = np.array(rlnn.layers[1].get_weights()[1])
     betas.append(rlnn.get_weights())
 
-    q = continuation_q(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2, sample_pathsS[:, M - 1],
+    q = continuation_q(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2, sample_pathsS[:, M - 1] / normalizer,
                        time_increments[M - 1])  # continuation value
     h = payoff(sample_pathsS[:, M - 1], K, style)  # value of exercising now
 
-    option[:, M - 1] = np.maximum(h, q)  # take maximum of both values
+    option[:, M - 1] = np.maximum(h, q * normalizer)  # take maximum of both values
 
     if plot_fit:
         predictions = np.array(rlnn.predict(sample_pathsS[:, M])).reshape(-1)
@@ -207,7 +210,8 @@ def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer, hidd_nds, l1,
 
     # compute option values by backward regression
     for m in range(M - 1, 0, -1):
-        rlnn.fit(sample_pathsS[:, m], option[:, m], epochs=3000, batch_size=int(N / 10), verbose=0,
+        normalizer = np.mean(sample_pathsS[:, m])
+        rlnn.fit(sample_pathsS[:, m] / normalizer, option[:, m] / normalizer, epochs=3000, batch_size=int(N / 10), verbose=0,
                  validation_split=0.3, callbacks=[early_stopping])
 
         # compute estimated option value one time step earlier
@@ -217,16 +221,16 @@ def model(S0, K, mu, sigma, N, monitoring_dates, style, optimizer, hidd_nds, l1,
         biases_layer_2 = np.array(rlnn.layers[1].get_weights()[1])
         betas.append(rlnn.get_weights())
 
-        q = continuation_q(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2, sample_pathsS[:, m - 1],
+        q = continuation_q(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2, sample_pathsS[:, m - 1] / normalizer,
                            time_increments[m - 1])  # continuation value
         h = payoff(sample_pathsS[:, m - 1], K, style)  # value of exercising now
-        option[:, m - 1] = np.maximum(h, q)  # take maximum of both values
+        option[:, m - 1] = np.maximum(h, q * normalizer)  # take maximum of both values
 
         if plot_fit:
             predictions = np.array(rlnn.predict(sample_pathsS[:, m])).reshape(-1)
             visualize_fit(S, predictions, option[:, m], sample_pathsS[:, m], m, monitored_stock, monitored_prices)
 
-    details['initial_option_value'] = option[0, 0] * S
+    details['initial_option_value'] = option[0, 0] # * S
     # Save details to a CSV file
     save_details_to_csv('run_details.csv', details)
 
@@ -315,15 +319,15 @@ K_strike = 40  # Strike price
 r = 0.06  # Risk-free rate
 T = 1  # Maturity
 M = 10  # Number of monitoring dates
-N = 30000  # Number of sample paths
-nodes = 80
+N = 40000  # Number of sample paths
+nodes = 16
 pf_style = 'put'  # Payoff type
 monitoring_dates = np.linspace(0, T, M + 1)
 # %%
-weights, option_value = model(S / S, K_strike / S, mu, sigma, N, monitoring_dates, pf_style,
-                              tf.keras.optimizers.legacy.Adam(learning_rate=0.002), nodes, 0.005, 0.01)
+weights, option_value = model(S, K_strike, mu, sigma, N, monitoring_dates, pf_style,
+                              tf.keras.optimizers.legacy.Adam(learning_rate=0.002), nodes, 0.003, 0.01)
 
-print(option_value[0, 0] * S)
+print(option_value[0, 0])
 
 
 # %%
@@ -332,7 +336,7 @@ for _ in range(10):
           tf.keras.optimizers.legacy.Adam(learning_rate=0.002), nodes, 0.005, 0.01)
 
 # %%
-N_b = 20000
+N_b = 140000
 stock_paths = gen_paths(monitoring_dates, S / S, mu, sigma, N_b)
 
 up = upper_bound(r, weights, stock_paths, K_strike / S, monitoring_dates, pf_style, nodes)
