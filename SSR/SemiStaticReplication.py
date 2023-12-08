@@ -245,7 +245,7 @@ if __name__ == "__main__":
             weights_layer_2 = np.array(current_weights[2]).reshape(-1)
             biases_layer_2 = np.array(current_weights[3])
             q = continuation_q(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2,
-                               stock_paths[:, m - 1] / normalizer, differences[m - 1], rfr, vol)
+                               stock_paths[:, m - 1], differences[m - 1], rfr, vol, normalizer)
 
             q_part = q * b[m - 1]
             g_part = (rlnn.predict(stock_paths[:, m] / normalizer, verbose=0) * b[m]).reshape(-1)
@@ -281,8 +281,8 @@ if __name__ == "__main__":
             biases_layer_1 = np.array(current_weights[1])
             weights_layer_2 = np.array(current_weights[2]).reshape(-1)
             biases_layer_2 = np.array(current_weights[3])
-            q = continuation_q(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2, s / normalizer,
-                               differences[m], rfr, vol)
+            q = continuation_q(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2, s,
+                               differences[m], rfr, vol, normalizer)
             exceed = np.logical_and(h > q, tau > m)
             tau[exceed] = m
             h_of_s[exceed] = h[exceed]
@@ -315,3 +315,10 @@ if __name__ == "__main__":
                                   keras.optimizers.Adam(), nodes, 0.001, 0.001)
 
     print(option_value[0, 0])
+
+# %%
+if __name__ == "__main__":
+    stock_bounds = gen_paths(monitoring_dates, S, r, sigma, 100000)
+    low = lower_bound(r, sigma, weights, stock_bounds, K_strike, monitoring_dates, pf_style)
+    up = upper_bound(r, sigma, weights, stock_bounds, K_strike, monitoring_dates, pf_style, nodes)
+    print(low, up)
