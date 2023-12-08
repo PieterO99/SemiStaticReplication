@@ -1,16 +1,18 @@
 from keras import layers
-from tensorflow import keras
-import tensorflow as tf
+import keras
 
 
 # Define the network class
 class SemiStaticNet(keras.models.Sequential):
-    def __init__(self, optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=0.001), hidden_nodes=32):
+    def __init__(self, optimizer=keras.optimizers.Adam(learning_rate=0.001), hidden_nodes=32):  # , dropout_rate=0.0
         super().__init__()
 
+        self.add(keras.Input(shape=(1,)))
         # Define the layers 
-        self.add(layers.Dense(units=hidden_nodes, activation='relu', input_shape=(1,), kernel_initializer='random_uniform',
-                              bias_initializer='random_uniform'))
+        self.add(
+            layers.Dense(units=hidden_nodes, activation='relu', kernel_initializer='random_uniform',
+                         bias_initializer='random_uniform'))
+        # self.add(layers.Dropout(dropout_rate))
         self.add(layers.Dense(units=1, activation='linear', kernel_initializer='random_uniform',
                               bias_initializer='random_uniform'))
 

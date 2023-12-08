@@ -11,8 +11,8 @@ def payoff(S0, K, style):
         raise ValueError("Invalid option style. Style must be 'call' or 'put'.")
 
 
-def forward(S0, r, T):
-    return S0 * np.exp(r * T)
+def forward(S0):  # r, T
+    return S0  # * np.exp(r * T)
 
 
 def d1(S0, K, T, r, sigma):
@@ -26,7 +26,6 @@ def d2(S0, K, T, r, sigma):
 
 
 def bs_call(S0, K, T, r, sigma):
-
     S0 = S0[:, np.newaxis]
     K = K[np.newaxis, :]
 
@@ -39,7 +38,6 @@ def bs_call(S0, K, T, r, sigma):
 
 
 def bs_put(S0, K, T, r, sigma):
-
     S0 = S0[:, np.newaxis]
     K = K[np.newaxis, :]
 

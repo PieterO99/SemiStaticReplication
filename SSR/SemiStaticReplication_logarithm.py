@@ -97,28 +97,26 @@ def save_details_to_csv(filename, details):
 
 # %%
 # Compute the continuation value Q for the N paths at time t_{m-1}
-def continuation_q(w_1, b_1, w_2, b_2, stock, delta_t, rfr, vol, normalizing_constant):
+def continuation_q_log(w_1, b_1, w_2, b_2, stock, delta_t, rfr, vol):
     cont = np.full_like(stock, b_2[0] * np.exp(-rfr * delta_t))
-    normalized_stock = stock / normalizing_constant
-    mask1_indices = np.where((w_1 >= 0) & (b_1 >= 0))[0]
-    mask2_indices = np.where((w_1 > 0) & (b_1 < 0))[0]
-    mask3_indices = np.where((w_1 < 0) & (b_1 > 0))[0]
 
-    strikes_call = -b_1[mask2_indices] / w_1[mask2_indices]
-    strikes_put = -b_1[mask3_indices] / w_1[mask3_indices]
-
-    cont += np.sum(w_2[mask1_indices] * (w_1[mask1_indices] *
-                                         np.tile(normalized_stock[:, None], len(mask1_indices)) + b_1[
-                                             mask1_indices] * np.exp(-rfr * delta_t)), axis=1)
-    cont += np.sum(w_2[mask2_indices] * w_1[mask2_indices] * bs_call(normalized_stock, strikes_call, delta_t, r, vol),
-                   axis=1)
-    cont -= np.sum(w_2[mask3_indices] * w_1[mask3_indices] * bs_put(normalized_stock, strikes_put, delta_t, r, vol),
-                   axis=1)
+    gauss_mean = b_1 + w_1 * (np.log(np.tile(stock[:, None], len(w_1))) + (rfr - 0.5 * vol ** 2) * delta_t)
+    gauss_var = delta_t * (w_1 * vol) ** 2
+    cont += np.sum(w_2 * np.exp(-rfr * delta_t) *
+                   (np.sqrt(gauss_var / (2 * np.pi)) * np.exp(- (gauss_mean ** 2) / (2 * gauss_var))
+                    + gauss_mean * (1 - norm.cdf(-gauss_mean / gauss_var))), axis=1)
 
     return cont
 
 
-def model(initial_stock, strike, drift, vol, rfr, sample_size, mon_dates, style, optimizer, hidd_nds, l1, l2):
+def pre_training(nnet, early_stopping, sample_paths, option, batch, n_epochs, val_ratio):
+    nnet.fit(sample_paths, option, epochs=n_epochs, batch_size=batch, verbose=0,
+             validation_split=val_ratio, callbacks=[early_stopping])
+
+    return nnet
+
+
+def model_log(initial_stock, strike, drift, vol, rfr, sample_size, mon_dates, style, optimizer, hidd_nds, l1, l2):
     """
     monitoring_dates: t0=0, ..., tM=T
     """
@@ -154,8 +152,7 @@ def model(initial_stock, strike, drift, vol, rfr, sample_size, mon_dates, style,
 
     rlnn.optimizer.learning_rate.assign(l1)
 
-    normalizer = np.mean(sample_pathsS[:, 1])
-    rlnn.fit(sample_pathsS[:, 1] / normalizer, option_pff, epochs=1000,
+    rlnn.fit(np.log(sample_pathsS[:, 1]), option_pff, epochs=1000,
              batch_size=int(sample_size / 10), verbose=0, validation_split=0.3, callbacks=[early_stopping])
     print('END OF FIRST PRE-RUN')
 
@@ -167,8 +164,7 @@ def model(initial_stock, strike, drift, vol, rfr, sample_size, mon_dates, style,
 
     rlnn.optimizer.learning_rate.assign(l2)
 
-    normalizer = np.mean(sample_pathsS[:, num_mon])
-    rlnn.fit(sample_pathsS[:, num_mon] / normalizer, option[:, num_mon], epochs=3000,
+    rlnn.fit(np.log(sample_pathsS[:, num_mon]), option[:, num_mon], epochs=3000,
              batch_size=int(sample_size / 10), verbose=0, validation_split=0.3, callbacks=[early_stopping])
 
     # Compute option value at T-1
@@ -178,9 +174,9 @@ def model(initial_stock, strike, drift, vol, rfr, sample_size, mon_dates, style,
     biases_layer_2 = np.array(rlnn.layers[1].get_weights()[1])
     betas.append(rlnn.get_weights())
 
-    q = continuation_q(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2,
-                       sample_pathsS[:, num_mon - 1],
-                       time_increments[num_mon - 1], rfr, vol, normalizer)
+    q = continuation_q_log(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2,
+                           sample_pathsS[:, num_mon - 1],
+                           time_increments[num_mon - 1], rfr, vol)  # continuation value
     h = payoff(sample_pathsS[:, num_mon - 1], strike, style)  # value of exercising now
 
     option[:, num_mon - 1] = np.maximum(h, q)  # take maximum of both values
@@ -192,8 +188,8 @@ def model(initial_stock, strike, drift, vol, rfr, sample_size, mon_dates, style,
 
     # compute option values by backward regression
     for m in range(num_mon - 1, 0, -1):
-        normalizer = np.mean(sample_pathsS[:, m])
-        rlnn.fit(sample_pathsS[:, m] / normalizer, option[:, m], epochs=3000, batch_size=int(sample_size / 10),
+
+        rlnn.fit(np.log(sample_pathsS[:, m]), option[:, m], epochs=3000, batch_size=int(sample_size / 10),
                  verbose=0, validation_split=0.3, callbacks=[early_stopping])
 
         # compute estimated option value one time step earlier
@@ -203,9 +199,9 @@ def model(initial_stock, strike, drift, vol, rfr, sample_size, mon_dates, style,
         biases_layer_2 = np.array(rlnn.layers[1].get_weights()[1])
         betas.append(rlnn.get_weights())
 
-        q = continuation_q(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2,
-                           sample_pathsS[:, m - 1],
-                           time_increments[m - 1], rfr, vol, normalizer)
+        q = continuation_q_log(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2,
+                               sample_pathsS[:, m - 1],
+                               time_increments[m - 1], rfr, vol)
         h = payoff(sample_pathsS[:, m - 1], strike, style)  # value of exercising now
         option[:, m - 1] = np.maximum(h, q)
 
@@ -216,14 +212,14 @@ def model(initial_stock, strike, drift, vol, rfr, sample_size, mon_dates, style,
 
     details['initial_option_value'] = option[0, 0]
     # Save details to a CSV file
-    save_details_to_csv('run_details.csv', details)
+    save_details_to_csv('run_details_logarithm.csv', details)
 
     return betas, option
 
 
 # %%
 if __name__ == "__main__":
-    def upper_bound(rfr, vol, trained_weights, stock_paths, strike, monitoring, style, nodes_n):
+    def upper_bound_log(rfr, vol, trained_weights, stock_paths, strike, monitoring, style, nodes_n):
         sample_size = len(stock_paths[:, 0])
         n_mon = len(monitoring)
         differences = np.diff(monitoring)
@@ -237,18 +233,17 @@ if __name__ == "__main__":
         martingale = np.zeros((sample_size, n_mon))
 
         for m in range(1, n_mon):
-            normalizer = np.mean(stock_paths[:, m])
             current_weights = trained_weights[- m]
             rlnn.set_weights(current_weights)
             weights_layer_1 = np.array(current_weights[0]).reshape(-1)
             biases_layer_1 = np.array(current_weights[1])
             weights_layer_2 = np.array(current_weights[2]).reshape(-1)
             biases_layer_2 = np.array(current_weights[3])
-            q = continuation_q(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2,
-                               stock_paths[:, m - 1] / normalizer, differences[m - 1], rfr, vol)
+            q = continuation_q_log(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2,
+                                   stock_paths[:, m - 1], differences[m - 1], rfr, vol)
 
             q_part = q * b[m - 1]
-            g_part = (rlnn.predict(stock_paths[:, m] / normalizer, verbose=0) * b[m]).reshape(-1)
+            g_part = (rlnn.predict(np.log(stock_paths[:, m]), verbose=0) * b[m]).reshape(-1)
 
             martingale[:, m] = (g_part - q_part)
 
@@ -260,7 +255,7 @@ if __name__ == "__main__":
         return upr
 
 
-    def lower_bound(rfr, vol, trained_weights, stock_paths, strike, monitoring, style):
+    def lower_bound_log(rfr, vol, trained_weights, stock_paths, strike, monitoring, style):
         sample_size, n_mon = len(stock_paths[:, 0]), len(monitoring)
         differences = np.diff(monitoring)
 
@@ -271,7 +266,6 @@ if __name__ == "__main__":
         h_of_s = payoff(stock_paths[:, n_mon - 1], strike, style)
 
         for m in range(n_mon - 1):
-            normalizer = np.mean(stock_paths[:, m + 1])
             s = stock_paths[:, m]  # stock values at time m
             h = payoff(s, strike, style)
             # weights is going to be the outcome of model(), so the weights relative to the first time interval are the
@@ -281,8 +275,8 @@ if __name__ == "__main__":
             biases_layer_1 = np.array(current_weights[1])
             weights_layer_2 = np.array(current_weights[2]).reshape(-1)
             biases_layer_2 = np.array(current_weights[3])
-            q = continuation_q(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2, s / normalizer,
-                               differences[m], rfr, vol)
+            q = continuation_q_log(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2, s,
+                                   differences[m], rfr, vol)
             exceed = np.logical_and(h > q, tau > m)
             tau[exceed] = m
             h_of_s[exceed] = h[exceed]
@@ -306,12 +300,12 @@ if __name__ == "__main__":
     r = 0.06  # Risk-free rate
     T = 1.  # Maturity
     M = 10  # Number of monitoring dates
-    N = 10000  # Number of sample paths
+    N = 20000  # Number of sample paths
     nodes = 32
     pf_style = 'put'  # Payoff type
     monitoring_dates = np.linspace(0, T, M + 1)
 
-    weights, option_value = model(S, K_strike, mu, sigma, r, N, monitoring_dates, pf_style,
-                                  keras.optimizers.Adam(), nodes, 0.001, 0.001)
+    weights, option_value = model_log(S, K_strike, mu, sigma, r, N, monitoring_dates, pf_style,
+                                      keras.optimizers.Adam(), nodes, 0.001, 0.0005)
 
     print(option_value[0, 0])
