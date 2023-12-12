@@ -119,7 +119,7 @@ def continuation_q(w_1, b_1, w_2, b_2, stock, delta_t, rfr, vol, normalizing_con
     return cont
 
 
-def model(initial_stock, strike, drift, vol, rfr, sample_size, mon_dates, style, optimizer, hidd_nds, l1, l2):
+def model(initial_stock, strike, rfr, vol, sample_size, mon_dates, style, optimizer, hidd_nds, l1, l2):
     """
     monitoring_dates: t0=0, ..., tM=T
     """
@@ -129,7 +129,7 @@ def model(initial_stock, strike, drift, vol, rfr, sample_size, mon_dates, style,
         'run_datetime': str(datetime.now()),
         'S0': initial_stock,
         'K': strike,
-        'mu': drift,
+        'mu': rfr,
         'sigma': vol,
         'N': sample_size,
         'monitoring_dates': mon_dates,
@@ -150,7 +150,7 @@ def model(initial_stock, strike, drift, vol, rfr, sample_size, mon_dates, style,
                                    start_from_epoch=200)
 
     # first pre-run
-    sample_pathsS = gen_paths(np.array([0., 1.]), initial_stock, drift, vol, sample_size)
+    sample_pathsS = gen_paths(np.array([0., 1.]), initial_stock, rfr, vol, sample_size)
     option_pff = payoff(sample_pathsS[:, 1], strike, style)
 
     rlnn.optimizer.learning_rate.assign(l1)
@@ -163,7 +163,7 @@ def model(initial_stock, strike, drift, vol, rfr, sample_size, mon_dates, style,
     normalizing_sequence = np.zeros(num_mon, dtype=float)
 
     # run the model
-    sample_pathsS = gen_paths(mon_dates, initial_stock, drift, vol, sample_size)
+    sample_pathsS = gen_paths(mon_dates, initial_stock, rfr, vol, sample_size)
     # evaluate maturity time option values
     option = np.zeros(sample_pathsS.shape)
     option[:, num_mon] = payoff(sample_pathsS[:, num_mon], strike, style)
@@ -316,7 +316,7 @@ if __name__ == "__main__":
     pf_style = 'put'  # Payoff type
     monitoring_dates = np.linspace(0, T, M + 1)
 
-    weights, option_value, normalizers = model(S, K_strike, mu, sigma, r, N, monitoring_dates, pf_style,
+    weights, option_value, normalizers = model(S, K_strike, mu, sigma, N, monitoring_dates, pf_style,
                                                keras.optimizers.Adam(), nodes, 0.0005, 0.001)
 
     print(option_value[0, 0])
