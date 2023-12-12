@@ -2,7 +2,6 @@ import csv
 from datetime import datetime
 
 import numpy as np
-from scipy.stats import norm
 
 import keras
 from keras.callbacks import EarlyStopping
@@ -98,8 +97,10 @@ def save_details_to_csv(filename, details):
 # %%
 # Compute the continuation value Q for the N paths at time t_{m-1}
 def continuation_q(w_1, b_1, w_2, b_2, stock, delta_t, rfr, vol, normalizing_constant):
-    cont = np.full_like(stock, b_2[0] * np.exp(-rfr * delta_t))
     normalized_stock = stock / normalizing_constant
+
+    cont = np.full_like(stock, b_2[0] * np.exp(-rfr * delta_t))
+
     mask1_indices = np.where((w_1 >= 0) & (b_1 >= 0))[0]
     mask2_indices = np.where((w_1 > 0) & (b_1 < 0))[0]
     mask3_indices = np.where((w_1 < 0) & (b_1 > 0))[0]
@@ -110,9 +111,9 @@ def continuation_q(w_1, b_1, w_2, b_2, stock, delta_t, rfr, vol, normalizing_con
     cont += np.sum(w_2[mask1_indices] * (w_1[mask1_indices] *
                                          np.tile(normalized_stock[:, None], len(mask1_indices)) + b_1[
                                              mask1_indices] * np.exp(-rfr * delta_t)), axis=1)
-    cont += np.sum(w_2[mask2_indices] * w_1[mask2_indices] * bs_call(normalized_stock, strikes_call, delta_t, r, vol),
+    cont += np.sum(w_2[mask2_indices] * w_1[mask2_indices] * bs_call(normalized_stock, strikes_call, delta_t, rfr, vol),
                    axis=1)
-    cont -= np.sum(w_2[mask3_indices] * w_1[mask3_indices] * bs_put(normalized_stock, strikes_put, delta_t, r, vol),
+    cont -= np.sum(w_2[mask3_indices] * w_1[mask3_indices] * bs_put(normalized_stock, strikes_put, delta_t, rfr, vol),
                    axis=1)
 
     return cont
@@ -145,7 +146,7 @@ def model(initial_stock, strike, drift, vol, rfr, sample_size, mon_dates, style,
     num_mon = len(time_increments)
 
     rlnn = SemiStaticNet(optimizer, hidd_nds)
-    early_stopping = EarlyStopping(monitor='val_loss', mode='min', patience=6, verbose=0, restore_best_weights=True,
+    early_stopping = EarlyStopping(monitor='val_loss', mode='min', patience=5, verbose=0, restore_best_weights=True,
                                    start_from_epoch=200)
 
     # first pre-run
@@ -159,6 +160,8 @@ def model(initial_stock, strike, drift, vol, rfr, sample_size, mon_dates, style,
              batch_size=int(sample_size / 10), verbose=0, validation_split=0.3, callbacks=[early_stopping])
     print('END OF FIRST PRE-RUN')
 
+    normalizing_sequence = np.zeros(num_mon, dtype=float)
+
     # run the model
     sample_pathsS = gen_paths(mon_dates, initial_stock, drift, vol, sample_size)
     # evaluate maturity time option values
@@ -168,8 +171,9 @@ def model(initial_stock, strike, drift, vol, rfr, sample_size, mon_dates, style,
     rlnn.optimizer.learning_rate.assign(l2)
 
     normalizer = np.mean(sample_pathsS[:, num_mon])
+    normalizing_sequence[num_mon - 1] = normalizer
     rlnn.fit(sample_pathsS[:, num_mon] / normalizer, option[:, num_mon], epochs=3000,
-             batch_size=int(sample_size / 10), verbose=0, validation_split=0.3, callbacks=[early_stopping])
+             batch_size=int(sample_size / 10), verbose=0, validation_split=0.2, callbacks=[early_stopping])
 
     # Compute option value at T-1
     weights_layer_1 = np.array(rlnn.layers[0].get_weights()[0]).reshape(-1)
@@ -193,8 +197,9 @@ def model(initial_stock, strike, drift, vol, rfr, sample_size, mon_dates, style,
     # compute option values by backward regression
     for m in range(num_mon - 1, 0, -1):
         normalizer = np.mean(sample_pathsS[:, m])
+        normalizing_sequence[m - 1] = normalizer
         rlnn.fit(sample_pathsS[:, m] / normalizer, option[:, m], epochs=3000, batch_size=int(sample_size / 10),
-                 verbose=0, validation_split=0.3, callbacks=[early_stopping])
+                 verbose=0, validation_split=0.2, callbacks=[early_stopping])
 
         # compute estimated option value one time step earlier
         weights_layer_1 = np.array(rlnn.layers[0].get_weights()[0]).reshape(-1)
@@ -218,12 +223,12 @@ def model(initial_stock, strike, drift, vol, rfr, sample_size, mon_dates, style,
     # Save details to a CSV file
     save_details_to_csv('run_details.csv', details)
 
-    return betas, option
+    return betas, option, normalizing_sequence
 
 
 # %%
 if __name__ == "__main__":
-    def upper_bound(rfr, vol, trained_weights, stock_paths, strike, monitoring, style, nodes_n):
+    def upper_bound(rfr, vol, trained_weights, normalizers, stock_paths, strike, monitoring, style, nodes_n):
         sample_size = len(stock_paths[:, 0])
         n_mon = len(monitoring)
         differences = np.diff(monitoring)
@@ -237,7 +242,7 @@ if __name__ == "__main__":
         martingale = np.zeros((sample_size, n_mon))
 
         for m in range(1, n_mon):
-            normalizer = np.mean(stock_paths[:, m])
+            normalizer = normalizers[m - 1]
             current_weights = trained_weights[- m]
             rlnn.set_weights(current_weights)
             weights_layer_1 = np.array(current_weights[0]).reshape(-1)
@@ -260,7 +265,7 @@ if __name__ == "__main__":
         return upr
 
 
-    def lower_bound(rfr, vol, trained_weights, stock_paths, strike, monitoring, style):
+    def lower_bound(rfr, vol, trained_weights, normalizers, stock_paths, strike, monitoring, style):
         sample_size, n_mon = len(stock_paths[:, 0]), len(monitoring)
         differences = np.diff(monitoring)
 
@@ -271,7 +276,7 @@ if __name__ == "__main__":
         h_of_s = payoff(stock_paths[:, n_mon - 1], strike, style)
 
         for m in range(n_mon - 1):
-            normalizer = np.mean(stock_paths[:, m + 1])
+            normalizer = normalizers[m]
             s = stock_paths[:, m]  # stock values at time m
             h = payoff(s, strike, style)
             # weights is going to be the outcome of model(), so the weights relative to the first time interval are the
@@ -306,19 +311,17 @@ if __name__ == "__main__":
     r = 0.06  # Risk-free rate
     T = 1.  # Maturity
     M = 10  # Number of monitoring dates
-    N = 10000  # Number of sample paths
-    nodes = 32
+    N = 20000  # Number of sample paths
+    nodes = 16
     pf_style = 'put'  # Payoff type
     monitoring_dates = np.linspace(0, T, M + 1)
 
-    weights, option_value = model(S, K_strike, mu, sigma, r, N, monitoring_dates, pf_style,
-                                  keras.optimizers.Adam(), nodes, 0.001, 0.001)
+    weights, option_value, normalizers = model(S, K_strike, mu, sigma, r, N, monitoring_dates, pf_style,
+                                               keras.optimizers.Adam(), nodes, 0.0005, 0.001)
 
     print(option_value[0, 0])
-
-# %%
-if __name__ == "__main__":
-    stock_bounds = gen_paths(monitoring_dates, S, r, sigma, 100000)
-    low = lower_bound(r, sigma, weights, stock_bounds, K_strike, monitoring_dates, pf_style)
-    up = upper_bound(r, sigma, weights, stock_bounds, K_strike, monitoring_dates, pf_style, nodes)
+    # %%
+    stock_bounds = gen_paths(monitoring_dates, S, r, sigma, 50000)
+    low = lower_bound(r, sigma, weights, normalizers, stock_bounds, K_strike, monitoring_dates, pf_style)
+    up = upper_bound(r, sigma, weights, normalizers, stock_bounds, K_strike, monitoring_dates, pf_style, nodes)
     print(low, up)
