@@ -7,6 +7,7 @@ from SemiStaticReplication import model
 import keras
 from tqdm import tqdm
 import csv
+import time
 
 
 # %%
@@ -111,19 +112,18 @@ def delta_hedged_portfolio(stock_path, strike, T_m, rfr, vol, n, exercise_dates,
 
     for i in range(1, days_until_maturity):
         s_i = stock_path[i]
-
-        if (any(abs(i * dt - exercise_date) < tolerance for exercise_date in exercise_dates) & (s_i < strike)) or (
-                i == days_until_maturity - 1):
-            break
-
-        portfolio.add_interest(rfr, dt)
-
         new_exercise_dates = new_exercise_dates - dt
         new_exercise_dates = new_exercise_dates[new_exercise_dates > 0]
         new_exercise_dates = np.insert(new_exercise_dates, 0, 0.)
 
         new_T = new_exercise_dates[-1]
         delta_i, v_i = delta_value_bermudan(s_i, strike, new_T, rfr, vol, n, new_exercise_dates, pf_style)
+
+        if (any(abs(i * dt - exercise_date) < tolerance for exercise_date in exercise_dates) & (strike - s_i > v_i)) or (
+                i == days_until_maturity - 1):
+            break
+
+        portfolio.add_interest(rfr, dt)
         portfolio.buy_stock(delta_i - portfolio.stock, s_i)
 
     portfolio.add_interest(rfr, dt)
@@ -214,6 +214,7 @@ def semi_static_hedge(trained_weights, normalizing_sequence, dates, stock_path, 
 
     n_mon = len(dates)
     differences = np.diff(dates)
+    m = 0
     for m in range(1, n_mon):
         normalizer = normalizing_sequence[m - 1]
         current_weights = trained_weights[- m]
@@ -225,6 +226,9 @@ def semi_static_hedge(trained_weights, normalizing_sequence, dates, stock_path, 
 
         q = cost_of_hedge(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2,
                           np.array([stock_path[m - 1]]), differences[m - 1], rfr, vol, normalizer)
+        
+        if strike - stock_path[m-1] > q:
+            break
 
         portfolio.add_cash(-q)
 
@@ -232,8 +236,6 @@ def semi_static_hedge(trained_weights, normalizing_sequence, dates, stock_path, 
         portfolio.add_cash(
             basket_payoff(weights_layer_1, biases_layer_1, weights_layer_2, biases_layer_2, stock_path[m], normalizer))
 
-        if stock_path[m] < strike:
-            break
 
     portfolio.pnl = portfolio.get_portfolio_value(stock_path[m]) - payoff(stock_path[m], strike, pf_style)
 
@@ -284,9 +286,10 @@ for i in tqdm(range(sample_size)):
 # %%
 nodes = 32
 N = 30000
-weights, option_value, normalizers = model(S, K, r, sigma, r, N, monitoring_dates, style,
+weights, option_value, normalizers = model(S, K, r, sigma, N, monitoring_dates, style,
                                            keras.optimizers.Adam(), nodes, 0.001, 0.001)
-print(option_value[0, 0])
+v0 = option_value[0, 0]
+print(v0)
 # %%
 monitored_sample_path = sample_paths[:, early_exercise_dates]
 hedging_error_SS = np.zeros(sample_size, dtype=float)
@@ -298,12 +301,12 @@ for i in tqdm(range(sample_size)):
 fig, ax = plt.subplots()
 
 # Plot histogram for hedging_error_SS in blue with 50% transparency
-ax.hist(hedging_error_SS, bins=200, range=(-1., 2.5), color='blue', alpha=0.5,
+ax.hist(hedging_error_SS, range=[-v0,v0], bins=200, color='blue', alpha=0.5,
         label=f'RLNN {nodes} nodes')
 
 # Plot histogram for hedging_error_Delta in orange with 50% transparency
-ax.hist(hedging_error_Delta, bins=200, range=(-1., 2.5), color='orange', alpha=0.5,
-        label='Delta hedging')
+ax.hist(hedging_error_Delta, range=[-v0,v0], bins=200, color='orange', alpha=0.5,
+       label='Delta hedging')
 
 # Add legend
 ax.legend()
@@ -319,7 +322,7 @@ plt.ylabel('Frequency')
 plt.gca().yaxis.set_major_formatter(PercentFormatter(sample_size))
 
 # Save the plot to a file
-plt.savefig(f'Hedging_Error_Comparison_{nodes}nodes_{S/K}moneyness.png', dpi=200, transparent=True)
+plt.savefig(f'Hedging_Error_Comparison_{nodes}nodes_{S/K}moneyness{time.time()}.png', dpi=200, transparent=True)
 
 # Show the plot
 plt.show()
