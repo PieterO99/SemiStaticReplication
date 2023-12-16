@@ -11,6 +11,11 @@ def payoff(S0, K, style):
         raise ValueError("Invalid option style. Style must be 'call' or 'put'.")
 
 
+def arithmetic_payoff(strike, spot, weights, style):
+    weighted_sum = np.dot(spot, weights)
+    return payoff(weighted_sum, strike, style)
+
+
 def forward(S0):  # r, T
     return S0  # * np.exp(r * T)
 
@@ -53,7 +58,6 @@ def gen_paths(monitoring_dates, S0, mu, sigma, N):
     """
     N: sample size
     """
-
     delta_t = np.diff(monitoring_dates)
     num_intervals = len(delta_t)
     rng = np.random.default_rng()
@@ -71,3 +75,30 @@ def gen_paths(monitoring_dates, S0, mu, sigma, N):
         stock_prices[i, 1:] = S0 * np.exp(cum_sum_exp + cum_sum_vol[i])
 
     return stock_prices
+
+
+def covariance_from_correlation(cor_mat, vols, dt):
+    vol_diag_mat = np.diag(vols)
+    cov_mat = np.dot(np.dot(vol_diag_mat, cor_mat), vol_diag_mat) * dt
+    return cov_mat
+
+
+def gen_paths_multivariate(initial_stocks, cor, vols, rfr, sample_size, mon_dates):
+    zero_mean = np.zeros(len(initial_stocks))
+    dt = mon_dates[-1] / (len(mon_dates) - 1)
+    cov = covariance_from_correlation(cor, vols, dt)
+
+    # antithetic sampling
+    gaussian_samples = np.random.multivariate_normal(zero_mean, cov, (sample_size // 2, len(mon_dates) - 1))
+    dw_mat = np.concatenate([gaussian_samples, -gaussian_samples])
+
+    sim_ln_stock = np.zeros((sample_size, len(mon_dates), len(initial_stocks)))
+    sim_ln_stock[:, 0] = np.tile(np.log(initial_stocks), (sample_size, 1))
+    base_drift = np.tile((np.add(np.full(len(initial_stocks), rfr), - 0.5 * np.square(vols))), (sample_size, 1)) * dt
+
+    for day in range(1, len(mon_dates)):
+        curr_drift = sim_ln_stock[:, day - 1] + base_drift
+        sim_ln_stock[:, day] = curr_drift + dw_mat[:, day - 1]
+
+    sim_stock_mat = np.exp(sim_ln_stock)
+    return sim_stock_mat
