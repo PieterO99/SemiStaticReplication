@@ -102,3 +102,41 @@ def gen_paths_multivariate(initial_stocks, cor, vols, rfr, sample_size, mon_date
 
     sim_stock_mat = np.exp(sim_ln_stock)
     return sim_stock_mat
+
+def unpack_weights(weights_t):
+    w_1 = np.array(weights_t[0]).reshape(-1)
+    b_1 = np.array(weights_t[1])
+    w_2 = np.array(weights_t[2]).reshape(-1) 
+    b_2 = np.array(weights_t[3])
+    return w_1, b_1, w_2, b_2
+
+# %%
+def binomial_pricer(S0, strike, T_m, rfr, vol, n, exercise_dates, pf_style):
+    m = len(exercise_dates) - 1
+    dim = n * m
+
+    dt = T_m / dim
+    u = np.exp(vol * np.sqrt(dt))
+    d = 1 / u
+    p = (np.exp(rfr * dt) - d) / (u - d)
+
+    option_values = np.zeros((dim + 1, dim + 1))
+
+    i_values = np.arange(dim + 1)
+    option_values[dim] = payoff(S0 * (u ** i_values) * (d ** (dim - i_values)), strike, pf_style)
+
+    for t in range(dim - 1, -1, -1):
+
+        i_values = np.arange(t + 1)  # Array [0, 1, ..., t]
+        hold_values = np.exp(-rfr * dt) * (
+                p * option_values[t + 1, i_values + 1] + (1 - p) * option_values[t + 1, i_values])
+
+        if (t % n) != 0:
+            option_values[t, : t + 1] = hold_values
+
+        else:
+            option_values[t, : t + 1] = np.maximum(hold_values,
+                                                   payoff(S0 * (u ** i_values) * (d ** (t - i_values)), strike,
+                                                          pf_style))
+
+    return option_values
