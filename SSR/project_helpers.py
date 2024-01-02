@@ -128,3 +128,58 @@ def gen_paths_heston(initial_stock, initial_vol, rfr, mr_speed, mr_mean, vol_vol
         paths[:, i, :] = np.column_stack((s, v))
 
     return paths
+
+def unpack_weights(weights_t):
+    w1 = np.array(weights_t[0]).reshape(-1)
+    b1 = np.array(weights_t[1])
+    w2 = np.array(weights_t).reshape(-1)
+    b2 = np.array(weights_t[3])
+    return w1, b1, w2, b2
+
+def binomial_tree_stock(S, T, sigma, n):
+    dt = T / n
+    u = np.exp(sigma * np.sqrt(dt))
+    d = 1 / u
+
+    stock_tree = np.zeros((n + 1, n + 1))
+    stock_tree[0, 0] = S
+
+    for i in range(1, n + 1):
+        stock_tree[i, i] = stock_tree[i - 1, i - 1] * u
+        for j in range(i, n + 1):
+            stock_tree[j, i - 1] = stock_tree[j - 1, i - 1] * d
+
+    return stock_tree
+
+
+# Returns a lower triangular matrix describing the option value dynamics
+# n is number of intervals in between monitoring dates
+def binomial_pricer(S0, strike, T_m, rfr, vol, n, exercise_dates, style):
+    m = len(exercise_dates) - 1
+    dim = n * m
+
+    dt = T_m / dim
+    u = np.exp(vol * np.sqrt(dt))
+    d = 1 / u
+    p = (np.exp(rfr * dt) - d) / (u - d)
+
+    option_values = np.zeros((dim + 1, dim + 1))
+
+    i_values = np.arange(dim + 1)
+    option_values[dim] = payoff(S0 * (u ** i_values) * (d ** (dim - i_values)), strike, style)
+
+    for t in range(dim - 1, -1, -1):
+
+        hold_values = np.zeros(t, dtype=float)
+        i_values = np.arange(t + 1)  # Array [0, 1, ..., t]
+        hold_values = np.exp(-rfr * dt) * (
+                p * option_values[t + 1, i_values + 1] + (1 - p) * option_values[t + 1, i_values])
+
+        if (t % n) != 0:
+            option_values[t, : t + 1] = hold_values
+
+        else:
+            option_values[t, : t + 1] = np.maximum(hold_values,
+                                                   payoff(S0 * (u ** i_values) * (d ** (t - i_values)), strike, style))
+
+    return option_values
